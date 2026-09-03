@@ -2234,6 +2234,14 @@ def _path_length_mm(path, grid_step):
 
 
 def record_neckdown(pcb_data, config, net_id, from_mm, to_mm, path, layer, kind):
+    # NOTE (measured 2026-09-03): length_mm here is the length of the whole
+    # ROUTED EDGE, not of the narrow copper on it. On the escape-confined run it
+    # reported necks up to 57.167mm against a 0.350mm escape window, which reads
+    # as a confinement failure and is not one -- the edge is 57mm long and its
+    # neck is at the ends. A ledger meant to answer "was every neck inside N?"
+    # has to record the NECKED length, which is only known after
+    # _apply_neckdown_widths has run in the caller. Until that is plumbed, read
+    # this field as edge length and do not use it to audit confinement.
     NECKDOWN_LOG.append({
         'net': _net_name_for(pcb_data, net_id),
         'from_mm': round(float(from_mm), 4),
