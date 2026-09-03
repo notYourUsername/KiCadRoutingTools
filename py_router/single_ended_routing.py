@@ -692,7 +692,12 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
             if d_raw < floor / 2.0 - 1e-6:
                 hard.append((s, d_raw))
                 continue
-            new_w = max(floor, 2.0 * allowed_half)
+            # THE FOURTH LEAK. This pass necks segments that graze foreign
+            # copper, and it used the class/fab floor -- so a rail with a
+            # declared min_neck_mm of 0.25 still got 0.20 here, which is what
+            # check_width_consistency's cross-check kept reporting after the
+            # other three sites were fixed. Honour the same per-net floor.
+            new_w = max(_min_neck_for(config, net_id, floor), 2.0 * allowed_half)
             if new_w < s.width - 1e-9:
                 s.width = round(new_w, 4)
                 necked += 1
@@ -2169,6 +2174,55 @@ def _min_neck_for(config, net_id, floor):
     return max(floor, want) if want else floor
 
 
+def _escape_confined(config):
+    """Escape-confined mode is ON exactly when the board declared per-net neck
+    floors. A board that declares none keeps the old behaviour untouched, which
+    is the opt-in guarantee this branch is measured against."""
+    return bool(getattr(config, 'power_net_min_neck', None))
+
+
+def _escape_window_mm(config):
+    """N: how far from a pad a wide net may run at its neck width.
+
+    Deliberately the SAME expression as the endpoint stub-proximity exemption
+    (`_exempt_r`, this file): one track plus one clearance. That radius is where
+    the cost model already stops charging proximity, because it is the region a
+    route has no choice but to cross to reach its pad. Confining the neck to it
+    says: narrow copper is an ESCAPE, permitted exactly where the geometry is
+    forced, and nowhere else.
+    """
+    return float(config.track_width) + float(config.clearance)
+
+
+def _neck_confined(path, config, grid_step):
+    """Is every cell of this path within N mm of one of its two ends?
+
+    A path that is not is a route which would run narrow across open board --
+    the 50.6mm-at-0.0889mm case that started this. Under escape-confined
+    neck-down such an edge FAILS instead, which is a fact the owner can act on
+    (re-place, widen the corridor, accept the open net) where a silently
+    narrowed 5V rail is not.
+    """
+    n = _escape_window_mm(config)
+    step = float(grid_step or 0.1)
+    try:
+        pts = [(p[0], p[1]) for p in path]
+    except Exception:
+        return True
+    if len(pts) < 2:
+        return True
+    def run(seq):
+        d, out = 0.0, [0.0]
+        for a, b in zip(seq, seq[1:]):
+            d += ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5 * step
+            out.append(d)
+        return out
+    fwd = run(pts)
+    total = fwd[-1]
+    # distance to the NEAREST end, per point
+    return all(min(f, total - f) <= n + 1e-9 for f in fwd)
+
+
 def _path_length_mm(path, grid_step):
     try:
         pts = [(p[0], p[1]) for p in path]
@@ -2838,6 +2892,15 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
             if r[0] is not None:
                 print(f"{print_prefix}{YELLOW}Wide {'power' if power_wide else 'impedance'} route blocked - routed short edge at "
                       f"{w:.4f}mm (down from {net_w:.4f}){RESET}")
+                if _escape_confined(config) and not _neck_confined(
+                        r[0], config, getattr(config, 'grid_step', None)):
+                    # Escape-confined: this edge would run narrow across open
+                    # board, not merely out of a pad. Refuse the rung and keep
+                    # trying narrower ones only if they are confined too.
+                    print(f"{print_prefix}{YELLOW}  refused: {w:.4f}mm would run "
+                          f"beyond the {_escape_window_mm(config):.3f}mm escape "
+                          f"window (escape-confined neck-down){RESET}")
+                    continue
                 record_neckdown(pcb_data, config, net_id, net_w, w, r[0],
                                 config.layers[0] if config.layers else None,
                                 'short_edge')
@@ -2862,6 +2925,12 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
         # re-route at their own wide width and can fail entirely.
         # (The mid-retry _via_rung_retry that used to fire here was removed
         # 2026-08-05 -- see the note above _rung_search_pair.)
+        return (result[0], result[1] + retry[1]) + result[2:] + (False, None)
+    if _escape_confined(config) and not _neck_confined(
+            retry[0], config, getattr(config, 'grid_step', None)):
+        print(f"{print_prefix}{YELLOW}Narrow retry succeeded but runs beyond the "
+              f"{_escape_window_mm(config):.3f}mm escape window - FAILING the edge "
+              f"instead of shipping a narrowed trunk (escape-confined){RESET}")
         return (result[0], result[1] + retry[1]) + result[2:] + (False, None)
     record_neckdown(pcb_data, config, net_id, net_w, neck_floor, retry[0],
                     config.layers[0] if config.layers else None, 'long_trunk')

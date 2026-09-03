@@ -1025,6 +1025,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         f"({len(power_nets_min_neck)}) must have same length")
                 _mn = identify_power_nets(pcb_data, power_nets, power_nets_min_neck)
                 config.power_net_min_neck = _mn
+                # Escape-confined neck-down: narrow copper is permitted only
+                # within N mm of a pad, N being the same one-track-plus-one-
+                # clearance window the cost model already exempts from
+                # proximity charges. Clamp the taper length to it so
+                # _apply_neckdown_widths restores full width at exactly the
+                # edge of that window, and the router refuses any neck that
+                # would run further (single_ended_routing._neck_confined).
+                _n_mm = float(config.track_width) + float(config.clearance)
+                if config.neckdown_length > _n_mm:
+                    print(f"\nEscape-confined neck-down: neckdown_length "
+                          f"{config.neckdown_length:.3f} -> {_n_mm:.3f}mm "
+                          f"(one track + one clearance)")
+                    config.neckdown_length = _n_mm
                 print(f"\nPower net neck-down floors ({len(_mn)} nets):")
                 for _nid, _v in sorted(_mn.items(), key=lambda kv: kv[1]):
                     _nm = (pcb_data.nets[_nid].name if _nid in pcb_data.nets
