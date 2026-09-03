@@ -2111,6 +2111,68 @@ def assign_waypoints_to_mst_edges(waypoints, pad_grid, mst_edges):
 # trunks keep the full power width (current capacity).
 SHORT_POWER_EDGE_MM = 10.0
 
+# ---------------------------------------------------------------- neck-down --
+# A net configured wider than the layer width is routed wide; when the wide
+# route is BLOCKED, that edge is re-routed narrower and kept, while the net's
+# other edges stay wide. That is deliberate -- completion over strict width --
+# but it had two gaps this branch closes.
+#
+# 1. It was invisible. Nothing machine-readable said a net had been necked, so a
+#    harness could only find out by measuring the copper afterwards. On one
+#    board TELEM_5V ran 50.6mm at 0.0889 and 11.5mm at 0.4 -- a 5V rail at one
+#    fifth of its declared width for most of its length, decided by a routing
+#    heuristic and recorded nowhere.
+# 2. The floor was not the owner's to set. neck_floor was always the LAYER
+#    width, so a 0.4mm rail necked to 0.0889 in one step with no way to say
+#    "this rail may go to 0.25 and no further, and if that does not fit, fail
+#    the edge and tell me".
+#
+# NECKDOWN_LOG collects one record per necked edge for JSON_SUMMARY.
+NECKDOWN_LOG = []
+
+
+def reset_neckdown_log():
+    del NECKDOWN_LOG[:]
+
+
+def _net_name_for(pcb_data, net_id):
+    try:
+        return pcb_data.nets[net_id].name
+    except Exception:
+        return f"net_{net_id}"
+
+
+def _min_neck_for(config, net_id, floor):
+    """The narrowest this net may be necked to.
+
+    Per-net from `config.power_net_min_neck` (set from plan.power_nets), and
+    otherwise the fab/layer floor the caller already computed -- so a board that
+    declares nothing behaves exactly as before.
+    """
+    want = (getattr(config, 'power_net_min_neck', None) or {}).get(net_id)
+    return max(floor, want) if want else floor
+
+
+def _path_length_mm(path, grid_step):
+    try:
+        pts = [(p[0], p[1]) for p in path]
+        return round(sum(((pts[i + 1][0] - pts[i][0]) ** 2
+                          + (pts[i + 1][1] - pts[i][1]) ** 2) ** 0.5
+                         for i in range(len(pts) - 1)) * float(grid_step or 1.0), 3)
+    except Exception:
+        return None
+
+
+def record_neckdown(pcb_data, config, net_id, from_mm, to_mm, path, layer, kind):
+    NECKDOWN_LOG.append({
+        'net': _net_name_for(pcb_data, net_id),
+        'from_mm': round(float(from_mm), 4),
+        'to_mm': round(float(to_mm), 4),
+        'length_mm': _path_length_mm(path, getattr(config, 'grid_step', None)),
+        'layer': layer,
+        'kind': kind,
+    })
+
 
 def _impedance_neckdown_allowed():
     """#156 follow-up: may an impedance-width net neck down to the NOMINAL
@@ -2734,6 +2796,19 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
     if result[0] is not None or not (power_wide or imp_wide) or not config.power_tap_neckdown:
         return result + (False, None)
     neck_floor = layer_w if power_wide else config.track_width
+    # The owner's floor for this net, if they declared one. Raising the floor is
+    # the whole mechanism: the ladder below stops here, and the long-trunk retry
+    # happens at this width, so an edge that cannot be routed at or above it
+    # FAILS instead of quietly shipping a rail at the layer minimum.
+    _declared_floor = neck_floor
+    neck_floor = _min_neck_for(config, net_id, neck_floor)
+    if neck_floor > _declared_floor + 1e-9:
+        print(f"{print_prefix}{YELLOW}Wide route blocked - neck floor for this net is "
+              f"{neck_floor:.4f}mm (declared min_neck), not {_declared_floor:.4f}mm{RESET}")
+    if net_w <= neck_floor + 1e-9:
+        # Nowhere to neck to: the floor is already the routed width. Fail the
+        # edge rather than pretend a neck-down happened.
+        return result + (False, None)
 
     if _edge_span_mm(sources, targets, config.grid_step) <= SHORT_POWER_EDGE_MM:
         # Short edge: step the width down, widest-that-fits wins; segments use it.
@@ -2747,6 +2822,9 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
             if r[0] is not None:
                 print(f"{print_prefix}{YELLOW}Wide {'power' if power_wide else 'impedance'} route blocked - routed short edge at "
                       f"{w:.4f}mm (down from {net_w:.4f}){RESET}")
+                record_neckdown(pcb_data, config, net_id, net_w, w, r[0],
+                                config.layers[0] if config.layers else None,
+                                'short_edge')
                 return (r[0], total_iters) + r[2:] + (False, w)
         # (The mid-retry _via_rung_retry that used to fire here was removed
         # 2026-08-05 -- see the note above _rung_search_pair.)
@@ -2769,6 +2847,8 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
         # (The mid-retry _via_rung_retry that used to fire here was removed
         # 2026-08-05 -- see the note above _rung_search_pair.)
         return (result[0], result[1] + retry[1]) + result[2:] + (False, None)
+    record_neckdown(pcb_data, config, net_id, net_w, neck_floor, retry[0],
+                    config.layers[0] if config.layers else None, 'long_trunk')
     return (retry[0], result[1] + retry[1]) + retry[2:] + (True, None)
 
 

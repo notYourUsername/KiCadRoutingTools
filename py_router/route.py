@@ -302,6 +302,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 coplanar_nets: Optional[List[str]] = None,
                 power_nets: Optional[List[str]] = None,
                 power_nets_widths: Optional[List[float]] = None,
+                power_nets_min_neck: Optional[List[float]] = None,
                 power_tap_neckdown: bool = True,
                 neckdown_length: float = 2.5,
                 neckdown_taper_length: float = 0.5,
@@ -998,6 +999,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if netclass_width_floors:
         config.netclass_width_floors = dict(netclass_width_floors)
 
+    # One run, one neck-down ledger. batch_route is called more than once in a
+    # single process (the GUI, the retry paths), and a stale ledger would
+    # attribute an earlier call's neck-downs to this one.
+    try:
+        from single_ended_routing import reset_neckdown_log
+        reset_neckdown_log()
+    except Exception:
+        pass
+
     # Identify power nets and set up per-net widths
     if power_nets and power_nets_widths:
         if len(power_nets) != len(power_nets_widths):
@@ -1005,6 +1015,21 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         power_net_widths = identify_power_nets(pcb_data, power_nets, power_nets_widths)
         if power_net_widths:
             config.power_net_widths = power_net_widths
+            # Per-net neck-down floor, paired positionally the same way. Nets
+            # without one keep the layer/fab floor, so a board that declares
+            # nothing behaves exactly as it did before.
+            if power_nets_min_neck:
+                if len(power_nets) != len(power_nets_min_neck):
+                    raise ValueError(
+                        f"--power-nets ({len(power_nets)}) and --power-nets-min-neck "
+                        f"({len(power_nets_min_neck)}) must have same length")
+                _mn = identify_power_nets(pcb_data, power_nets, power_nets_min_neck)
+                config.power_net_min_neck = _mn
+                print(f"\nPower net neck-down floors ({len(_mn)} nets):")
+                for _nid, _v in sorted(_mn.items(), key=lambda kv: kv[1]):
+                    _nm = (pcb_data.nets[_nid].name if _nid in pcb_data.nets
+                           else f"Net {_nid}")
+                    print(f"  {_v:.4f}mm: {_nm}")
             print(f"\nPower net width assignments ({len(power_net_widths)} nets):")
             # Group by width for summary
             width_groups: Dict[float, List[str]] = {}
@@ -3251,6 +3276,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 for _n, _r in sorted(_amp.items())]
     except Exception:
         pass
+    # Neck-downs, per edge, machine-readable. Before this branch the only
+    # record that a declared power net had been narrowed mid-run was a coloured
+    # line of prose in the log; a grader had to measure the copper afterwards to
+    # find out. compare.py can now gate on "no power net necked below X".
+    try:
+        from single_ended_routing import NECKDOWN_LOG
+        if NECKDOWN_LOG:
+            summary['neckdowns'] = [dict(r) for r in NECKDOWN_LOG]
+    except Exception:
+        pass
     print(f"JSON_SUMMARY: {json.dumps(summary)}")
 
     # Write output file or return results for direct application
@@ -3715,6 +3750,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         rip_blocker_nets=_finalize_rip9,
                         power_nets=power_nets,
                         power_nets_widths=power_nets_widths,
+                        power_nets_min_neck=power_nets_min_neck,
                         # #658: the chain's layer economics reach the
                         # finalize legs (previously uniform 1.0 -- welds
                         # traveled priced-up layers for free).
@@ -3794,6 +3830,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         rip_blocker_nets=_finalize_rip9,
                         power_nets=power_nets,
                         power_nets_widths=power_nets_widths,
+                        power_nets_min_neck=power_nets_min_neck,
                         # #658: same layer economics as the GUI leg above.
                         # 34d2e448 forwarded layer_costs to the _gui9 branch
                         # ONLY, so on the CLI -- every replay, stress and
@@ -4972,6 +5009,14 @@ For differential pair routing, use route_diff.py:
                         help="Glob patterns for power nets (e.g., '*GND*' '*VCC*'). Must pair with --power-nets-widths.")
     parser.add_argument("--power-nets-widths", nargs="*", type=float, default=[],
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
+    parser.add_argument('--power-nets-min-neck', nargs='+', type=float, default=None,
+                        help="Per-net MINIMUM neck-down width in mm, positionally paired "
+                             "with --power-nets exactly as --power-nets-widths is. A wide "
+                             "route that is blocked necks down; without this it necks to "
+                             "the layer width, so a 0.4mm rail can end up at 0.0889mm for "
+                             "most of its length. Give a floor and an edge that cannot be "
+                             "routed at or above it FAILS instead, which is a fact you can "
+                             "act on. Default: the layer/fab floor, i.e. previous behaviour.")
     parser.add_argument("--no-power-tap-neckdown", action="store_true",
                         help="Disable neck-down retry of failed power-net tap edges (issue #72): by default a "
                              "wide tap that cannot fit is re-routed at the layer's default width near the pad")
@@ -5420,6 +5465,7 @@ For differential pair routing, use route_diff.py:
                 coplanar_nets=args.coplanar_nets,
                 power_nets=args.power_nets,
                 power_nets_widths=args.power_nets_widths,
+                power_nets_min_neck=args.power_nets_min_neck,
                 power_tap_neckdown=not args.no_power_tap_neckdown,
                 neckdown_length=args.neckdown_length,
                 neckdown_taper_length=args.neckdown_taper_length,
