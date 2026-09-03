@@ -294,6 +294,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 bga_exclusion_zones: Optional[List[Tuple[float, float, float, float]]] = None,
                 direction_order: str = None,
                 ordering_strategy: str = "inside_out",
+                order_seed: Optional[int] = None,
                 disable_bga_zones: Optional[List[str]] = None,
                 track_width: float = defaults.TRACK_WIDTH,
                 track_width_from_class: bool = False,
@@ -1231,6 +1232,31 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
 
     elif ordering_strategy == "original":
         print("\nUsing original net order (no sorting)")
+
+    # --order-seed: a seeded permutation of the routing order, applied AFTER the
+    # chosen strategy.
+    #
+    # The router is deterministic (EXP-20260903-determinism), so "run it again"
+    # yields the same board and a portfolio needs a real axis of variation. Net
+    # ORDER is the honest one: it decides who claims a corridor first, and every
+    # later net routes around what is already there. The three named strategies
+    # (mps / inside_out / bus) are three points in that space and a portfolio
+    # over them was exhausted on this board (EXP-20260902-portfolio); a seed
+    # samples the rest of it.
+    #
+    # Deliberately NOT the blocking-obstacle list, which is what the log prints
+    # at the point this was first noticed: that list is diagnostic only, and
+    # permuting it changes nothing (measured -- two runs whose blocker lists
+    # differ in 192 lines routed bit-identical copper).
+    if order_seed is not None:
+        import random as _rnd
+        _r = _rnd.Random(int(order_seed))
+        _before = list(net_ids)
+        net_ids = list(net_ids)
+        _r.shuffle(net_ids)
+        _moved = sum(1 for a, b in zip(_before, net_ids) if a != b)
+        print(f"\nOrder seed {order_seed}: permuted the routing order of "
+              f"{len(net_ids)} net(s) ({_moved} changed position)")
 
     # #472 direct-first ordering (KICAD_DIRECT_FIRST=0 disables): nets with a
     # BARE BGA ball (>=2 pads, no attached copper -- the fanout-deferred
@@ -4893,6 +4919,12 @@ For differential pair routing, use route_diff.py:
                              "inside_out, original, or bus (detected bus groups first, "
                              "members middle-out, rest by mps; ordering only -- "
                              "corridor attraction still needs --bus)")
+    parser.add_argument('--order-seed', type=int, default=None,
+                        help="Seeded permutation of the net ROUTING ORDER, applied "
+                             "after --ordering. The router is deterministic, so a "
+                             "portfolio needs a real axis of variation; net order is "
+                             "it, because whoever routes first claims the corridor. "
+                             "Same seed, same board. Omit for the strategy's own order.")
     parser.add_argument("--direction", "-d", choices=["forward", "backward"],
                         default=None,
                         help="Direction search order for each net route")
@@ -5406,6 +5438,7 @@ For differential pair routing, use route_diff.py:
     batch_route(args.input_file, args.output_file, net_names,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
+                order_seed=args.order_seed,
                 disable_bga_zones=args.no_bga_zones,
                 rip_existing_nets=args.rip_existing_nets,
                 force_reroute=args.force_reroute,
