@@ -1078,8 +1078,24 @@ def _diagnose_blocked_start(obstacles: 'GridObstacleMap', cells: List, label: st
             if blocked_positions:
                 blockers = _identify_blocking_obstacles(blocked_positions, pcb_data, config, current_net_id)
                 if blockers:
-                    # Sort by count descending
-                    sorted_blockers = sorted(blockers.items(), key=lambda x: x[1][1], reverse=True)
+                    # Sort by count descending, then by NET NAME.
+                    #
+                    # The counts come from `identify_blocking_obstacles`, which
+                    # returns a Rust `std::collections::HashMap`. std HashMap
+                    # seeds SipHash from a per-process random key, so its
+                    # iteration order differs on every run -- and with a
+                    # count-only key, Python's stable sort preserved that random
+                    # order for every tie. On this board almost every blocker
+                    # ties at (1), so two runs of the SAME build printed these
+                    # lines in different orders: 582 differing lines between two
+                    # runs whose routed copper was bit-identical.
+                    #
+                    # That is log-only -- the routed board does not depend on it
+                    # -- but it made `diff` useless for exactly the job it is
+                    # needed for: telling whether two builds routed the same
+                    # board. Ties now break on the net name, which is stable.
+                    sorted_blockers = sorted(blockers.items(),
+                                             key=lambda x: (-x[1][1], x[1][0]))
                     blocker_strs = [f"{name}({count})" for net_id, (name, count) in sorted_blockers[:5]]
                     _diag(f"{print_prefix}    Blocking obstacles: {', '.join(blocker_strs)}")
 
