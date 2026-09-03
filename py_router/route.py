@@ -3750,7 +3750,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         rip_blocker_nets=_finalize_rip9,
                         power_nets=power_nets,
                         power_nets_widths=power_nets_widths,
-                        power_nets_min_neck=power_nets_min_neck,
                         # #658: the chain's layer economics reach the
                         # finalize legs (previously uniform 1.0 -- welds
                         # traveled priced-up layers for free).
@@ -3830,7 +3829,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         rip_blocker_nets=_finalize_rip9,
                         power_nets=power_nets,
                         power_nets_widths=power_nets_widths,
-                        power_nets_min_neck=power_nets_min_neck,
                         # #658: same layer economics as the GUI leg above.
                         # 34d2e448 forwarded layer_costs to the _gui9 branch
                         # ONLY, so on the CLI -- every replay, stress and

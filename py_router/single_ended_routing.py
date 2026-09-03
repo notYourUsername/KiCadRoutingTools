@@ -5133,8 +5133,15 @@ def _neck_width_for_net(config: GridRouteConfig, net_id: int, layer: str) -> flo
     KICAD_IMPEDANCE_NECKDOWN allow, #465) necks to the NOMINAL track width."""
     lw = config.get_track_width(layer)
     if config.get_net_track_width(net_id, layer) > lw + 1e-9:
-        return lw
-    return min(lw, config.track_width)
+        # THE LEAK this closes: the long-trunk branch of the neck-down returns
+        # necked_down=True and leaves the actual narrowing of the pad-adjacent
+        # segments to this function, which knew nothing about a declared
+        # min_neck_mm. So a rail with a 0.25mm floor still shipped 0.20mm copper
+        # here -- 5 of 197 records on the 4-layer board, all caught by
+        # check_width_consistency's cross-check, which is the whole reason that
+        # cross-check exists.
+        return _min_neck_for(config, net_id, lw)
+    return _min_neck_for(config, net_id, min(lw, config.track_width))
 
 
 def _neck_pass(segments, config: GridRouteConfig, obstacles, coord: GridCoord,
