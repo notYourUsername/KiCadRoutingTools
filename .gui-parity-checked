@@ -1,3 +1,18 @@
+ed224a3c05547c2169cdcc0c5dd21f0f2b3a64d8 2026-09-03 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit ac3b5dcc..ed224a3c: NO GAPS. One engine/GUI file changed,
+py_router/single_ended_routing.py, and the change is the blocking-obstacle
+diagnostic breaking ties on the net name instead of leaving them in Rust
+HashMap order.
+
+Parity here is MEASURED, not read. Two builds of this branch differing only by
+an unused module constant route vectis-v1-4layer-v2 to identical copper: 7638
+segments, 479 vias, identical sorted-geometry hash, and identical to v0.21.1's.
+The route log's content diff is 0 lines, against 452 before the sort (192 of
+those were the blocker lists themselves). The changed expression feeds _diag
+and nothing else -- no new argparse flag, no new engine parameter, no new
+main() post-pass -- so engine and GUI are affected identically: the same board
+and a log line whose ties are ordered.
+
 ac3b5dcc 2026-08-18 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit 55b54f1b..ac3b5dcc: NO GAPS. Sixteen commits, of which six are skill/doc
 edits and one is the previous ledger entry; the engine/GUI surface is eleven
