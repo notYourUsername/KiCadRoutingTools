@@ -104,6 +104,9 @@ from __future__ import annotations
 from time import perf_counter as _perf
 from typing import Dict, Optional
 
+import json
+import os
+
 import numpy as np
 
 import env_knobs
@@ -483,7 +486,54 @@ def history_rows(config) -> Optional[np.ndarray]:
     return field.rows()
 
 
+def dump_history(config) -> None:
+    """Append this call's contest field to KICAD_HISTORY_DUMP as JSONL.
+
+    READ-ONLY DIAGNOSTIC, off unless the env var is set. It does not touch the
+    field, the config, or any cost, so a run with it off is bit-identical to
+    one without it -- which is the point: the measured runs of an experiment
+    must not be the runs that carry the instrument.
+
+    One JSON object per routing call (the field is reset per call, #590), each
+    holding the cells that were charged, in mm:
+
+        {"call": 3, "grid_step": 0.05, "contests": 41, "rips": 8,
+         "cells": [[layer_idx, x_mm, y_mm, charges], ...]}
+
+    ``charges`` is the cell's accumulated weight divided by the per-contest
+    increment -- with the shipped flat settings (escalate 0) that is exactly
+    the NUMBER OF TIMES the cell was contested. Two caveats the caller must
+    respect: the cap (KICAD_HISTORY_CAP, default 0.5) SATURATES the count at
+    cap/cost = 5, so "5" means "5 or more"; and a contest is a stalled net's
+    frontier meeting a routed net's copper, which is not the same event as a
+    via being placed and ripped.
+    """
+    path = os.environ.get('KICAD_HISTORY_DUMP')
+    if not path:
+        return
+    field = getattr(config, '_history_cong', None)
+    if field is None or field.keys.size == 0:
+        return
+    inc = env_knobs.HISTORY['cost'] or 1.0
+    step = getattr(config, 'grid_step', REFERENCE_GRID_STEP)
+    keys, w = field.keys, field.weights
+    layer = (keys >> 48).astype(np.int64)
+    gx = ((keys >> 24) & ((1 << 24) - 1)).astype(np.int64) - _OFF
+    gy = (keys & ((1 << 24) - 1)).astype(np.int64) - _OFF
+    cells = [[int(l), round(float(x) * step, 4), round(float(y) * step, 4),
+              round(float(c) / inc, 3)]
+             for l, x, y, c in zip(layer, gx, gy, w)]
+    rec = {"grid_step": step, "cost_inc": inc,
+           "cap": env_knobs.HISTORY['cap'], "escalate": env_knobs.HISTORY['escalate'],
+           "contests": field.contests, "rips": field.rips,
+           "frontiers": field.frontiers, "evicted": field.evicted,
+           "cells": cells}
+    with open(path, 'a') as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def print_history_summary(config) -> None:
     field = getattr(config, '_history_cong', None)
     if field is not None and (field.rips or field.frontiers or field.contests):
         print(f"  {field.summary()}")
+    dump_history(config)
